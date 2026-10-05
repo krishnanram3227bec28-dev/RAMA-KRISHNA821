@@ -1,24 +1,44 @@
 import os
 import shutil
+import boto3  # AWS SDK for Python
+from botocore.exceptions import NoCredentialsError
 from cryptography.fernet import Fernet
 
+# --- AWS CONFIGURATION ---
+# Replace these with your own configuration or set them as environment variables
+AWS_BUCKET_NAME = "your-secure-cloud-backup-bucket" 
+
 def generate_and_save_key(key_path="secret.key"):
-    """Generates a symmetric encryption key and saves it to a file."""
+    """Generates a symmetric encryption key and saves it locally."""
     key = Fernet.generate_key()
     with open(key_path, "wb") as key_file:
         key_file.write(key)
     print(f"🔒 New key generated and saved to: {key_path}")
-    print("⚠️ KEEP THIS KEY SAFE. If you lose it, you cannot decrypt your folder!")
 
 def load_key(key_path="secret.key"):
     """Loads the encryption key from the specified path."""
     if not os.path.exists(key_path):
-        raise FileNotFoundError(f"Key file not found at {key_path}. Cannot proceed.")
+        raise FileNotFoundError(f"Key file not found at {key_path}.")
     with open(key_path, "rb") as key_file:
         return key_file.read()
 
-def encrypt_folder(folder_path, key_path="secret.key"):
-    """Zips a folder and encrypts the zip archive."""
+def upload_to_s3(local_file, bucket, s3_file):
+    """Uploads the encrypted file directly to an AWS S3 Bucket."""
+    s3 = boto3.client('s3')
+    try:
+        print(f"☁️ Uploading {local_file} to AWS S3 bucket '{bucket}'...")
+        s3.upload_file(local_file, bucket, s3_file)
+        print("🚀 Upload Successful! Your backup is secure in the cloud.")
+        return True
+    except FileNotFoundError:
+        print("❌ The local file was not found.")
+        return False
+    except NoCredentialsError:
+        print("❌ AWS Credentials not found. Please configure 'aws configure' in your local CLI.")
+        return False
+
+def encrypt_and_backup_folder(folder_path, key_path="secret.key"):
+    """Zips a folder, encrypts the zip archive, and uploads it to AWS S3."""
     if not os.path.exists(key_path):
         generate_and_save_key(key_path)
         
@@ -27,60 +47,31 @@ def encrypt_folder(folder_path, key_path="secret.key"):
     
     # 1. Compress the folder into a temporary zip file
     print(f"📦 Compressing folder: {folder_path}...")
-    zip_output_name = folder_path  # Creates folder_path.zip
-    shutil.make_archive(zip_output_name, 'zip', folder_path)
-    zip_file_path = f"{zip_output_name}.zip"
+    shutil.make_archive(folder_path, 'zip', folder_path)
+    zip_file_path = f"{folder_path}.zip"
     
     # 2. Read the zip data and encrypt it
     with open(zip_file_path, "rb") as file_to_encrypt:
         data = file_to_encrypt.read()
-        
     encrypted_data = fernet.encrypt(data)
     
-    # 3. Write encrypted data to a new secure file extension (.enc)
+    # 3. Write encrypted data to an .enc file
     encrypted_output_path = f"{folder_path}.enc"
     with open(encrypted_output_path, "wb") as encrypted_file:
         encrypted_file.write(encrypted_data)
         
-    # 4. Clean up the plaintext zip file
+    # Clean up the plaintext zip file
     os.remove(zip_file_path)
-    print(f"🛡️ Folder successfully encrypted into: {encrypted_output_path}")
+    print(f"🛡️ Folder successfully encrypted locally: {encrypted_output_path}")
 
-def decrypt_folder(encrypted_file_path, output_folder_name, key_path="secret.key"):
-    """Decrypts an .enc file and extracts it back into a standard folder."""
-    key = load_key(key_path)
-    fernet = Fernet(key)
-    
-    # 1. Read and decrypt the data
-    print(f"🔓 Decrypting file: {encrypted_file_path}...")
-    with open(encrypted_file_path, "rb") as encrypted_file:
-        encrypted_data = encrypted_file.read()
-        
-    decrypted_data = fernet.decrypt(encrypted_data)
-    
-    # 2. Save the decrypted data as a temporary zip file
-    temp_zip = "temp_decrypted.zip"
-    with open(temp_zip, "wb") as decrypted_file:
-        decrypted_file.write(decrypted_data)
-        
-    # 3. Extract the zip file back into a folder
-    shutil.unpack_archive(temp_zip, output_folder_name, 'zip')
-    os.remove(temp_zip)
-    print(f"📂 Folder successfully restored to: {output_folder_name}/")
+    # 4. AUTOMATED CLOUD BACKUP
+    # Uploads the encrypted file to S3 using just the file name
+    s3_filename = os.path.basename(encrypted_output_path)
+    upload_to_s3(encrypted_output_path, AWS_BUCKET_NAME, s3_filename)
 
-# --- Example Usage ---
 if __name__ == "__main__":
-    # Define paths (Change these to match your local folders)
-    my_folder = "./my_private_data"
+    # Example Target Directory
+    target_dir = "./my_private_data"
     
-    # Create a dummy folder for testing if it doesn't exist
-    if not os.path.exists(my_folder):
-        os.makedirs(my_folder)
-        with open(f"{my_folder}/notes.txt", "w") as f:
-            f.write("This is a secret portfolio file.")
-
-    # 1. Test Encryption
-    encrypt_folder(my_folder)
-    
-    # 2. Test Decryption (Restores it to a new folder named 'restored_data')
-    # decrypt_folder(f"{my_folder}.enc", "./restored_data")
+    # Run the automated local encryption + cloud backup pipeline
+    encrypt_and_backup_folder(target_dir)
